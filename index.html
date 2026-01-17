@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Excel按服务商拆分工具</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { padding: 50px; font-family: "宋体", Arial; background-color: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background-color: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .title { text-align: center; margin-bottom: 30px; color: #333; }
+        .upload-area { border: 2px dashed #ccc; border-radius: 8px; padding: 50px; text-align: center; margin-bottom: 20px; cursor: pointer; }
+        .upload-area.active { border-color: #2196F3; background-color: #f0f8ff; }
+        .input-area { margin-bottom: 20px; }
+        .input-area label { display: inline-block; width: 100px; font-size: 14px; color: #666; }
+        .input-area input { width: 300px; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+        .btn { padding: 10px 30px; background-color: #2196F3; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        .btn:disabled { background-color: #ccc; cursor: not-allowed; }
+        .progress-area { margin-top: 20px; display: none; }
+        .progress-text { font-size: 14px; color: #666; margin-bottom: 10px; }
+        .progress-bar { width: 100%; height: 10px; border-radius: 5px; background-color: #eee; overflow: hidden; }
+        .progress-fill { height: 100%; background-color: #2196F3; width: 0%; transition: width 0.3s ease; }
+        .tip { margin-top: 20px; font-size: 12px; color: #999; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="title">Excel按服务商拆分工具</h1>
+        <div class="upload-area" id="uploadArea">
+            <p>点击上传或拖拽Excel文件到此处</p>
+            <p style="font-size: 12px; color: #999; margin-top: 10px;">支持格式：.xlsx、.xls、.csv</p>
+            <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display: none;">
+        </div>
+        <div class="input-area">
+            <label for="prefixInput">文件前缀：</label>
+            <input type="text" id="prefixInput" value="门店_">
+        </div>
+        <button class="btn" id="splitBtn" disabled>开始拆分</button>
+        <div class="progress-area" id="progressArea">
+            <div class="progress-text" id="progressText">处理中：请等待...</div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+        </div>
+        <div class="tip">
+            提示：所有操作均在本地浏览器执行，数据不会上传到服务器，无需担心隐私泄露。
+        </div>
+    </div>
+
+    <!-- 引入核心库 -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
+    <script>
+        // 全局变量
+        let workbook = null; // 解析后的工作簿
+        let file = null; // 上传的文件
+
+        // 元素获取
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const prefixInput = document.getElementById('prefixInput');
+        const splitBtn = document.getElementById('splitBtn');
+        const progressArea = document.getElementById('progressArea');
+        const progressText = document.getElementById('progressText');
+        const progressFill = document.getElementById('progressFill');
+
+        // 1. 上传区域事件绑定（点击+拖拽）
+        uploadArea.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            file = e.target.files[0];
+            if (!file) return;
+            // 解析Excel文件
+            parseExcelFile(file);
+        });
+
+        // 拖拽事件
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('active');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('active');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('active');
+            file = e.dataTransfer.files[0];
+            if (!file) return;
+            // 解析Excel文件
+            parseExcelFile(file);
+        });
+
+        // 2. 解析Excel文件（对应VBA的工作簿读取）
+        function parseExcelFile(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    workbook = XLSX.read(data, { type: 'array', cellDates: true });
+                    splitBtn.disabled = false;
+                    alert('文件解析成功，可点击「开始拆分」按钮进行处理！');
+                } catch (err) {
+                    alert(`文件解析失败：${err.message}`);
+                    splitBtn.disabled = true;
+                    workbook = null;
+                    file = null;
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        // 3. 开始拆分按钮点击事件
+        splitBtn.addEventListener('click', async () => {
+            if (!workbook || !file) return;
+            const prefix = prefixInput.value || '门店_';
+            try {
+                await splitExcelByStore(prefix);
+                alert('拆分完成！文件已开始下载～');
+            } catch (err) {
+                alert(`拆分失败：${err.message}`);
+            } finally {
+                // 重置进度
+                progressArea.style.display = 'none';
+                progressFill.style.width = '0%';
+            }
+        });
+
+        // 4. 核心拆分逻辑（对应VBA的SplitWorkbookByStore）
+        async function splitExcelByStore(prefix) {
+            // 显示进度
+            progressArea.style.display = 'block';
+            const startTime = new Date().getTime();
+
+            // 步骤1：收集所有唯一服务商名称（对应VBA第一遍工作表遍历）
+            const storeSet = new Set(); // 用于去重
+            const sheetNames = workbook.SheetNames;
+
+            for (const sheetName of sheetNames) {
+                const worksheet = workbook.Sheets[sheetName];
+                // 转换为二维数组（表头在第0行）
+                const aoa = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+                if (aoa.length <= 1) continue; // 只有表头，无数据
+
+                // 查找「服务商名称」列索引
+                const headerRow = aoa[0];
+                const serviceColIndex = headerRow.findIndex(item => item === '服务商名称');
+                if (serviceColIndex === -1) {
+                    alert(`工作表【${sheetName}】未找到【服务商名称】列，跳过该表数据收集！`);
+                    continue;
+                }
+
+                // 遍历数据行，收集服务商名称
+                for (let i = 1; i < aoa.length; i++) {
+                    const storeName = String(aoa[i][serviceColIndex] || '').trim();
+                    if (storeName) {
+                        storeSet.add(storeName);
+                    }
+                }
+            }
+
+            // 边界判断：无有效服务商数据
+            const storeNames = Array.from(storeSet);
+            if (storeNames.length === 0) {
+                throw new Error('服务商名称列无有效数据！');
+            }
+            const totalStores = storeNames.length;
+
+            // 步骤2：创建JSZip对象，模拟输出文件夹
+            const zip = new JSZip();
+            const folderName = `拆分结果_${formatDate(new Date())}`;
+
+            // 步骤3：遍历每个服务商，生成独立Excel文件（对应VBA第二遍遍历）
+            for (let storeIndex = 0; storeIndex < totalStores; storeIndex++) {
+                const storeName = storeNames[storeIndex];
+                // 更新进度
+                const progress = ((storeIndex + 1) / totalStores) * 100;
+                progressFill.style.width = `${progress}%`;
+                progressText.textContent = `处理中：${storeName}（${storeIndex + 1}/${totalStores}，${Math.round(progress)}%）`;
+
+                // 清理文件名（对应VBA CleanFileName）
+                const cleanStoreName = cleanFileName(storeName);
+                // 生成唯一文件名（对应VBA GetUniqueFileName，此处简化为ZIP内唯一）
+                let fileName = `${prefix}${cleanStoreName}.xlsx`;
+                let counter = 1;
+                while (zip.file(`${folderName}/${fileName}`)) {
+                    fileName = `${prefix}${cleanStoreName}(${counter}).xlsx`;
+                    counter++;
+                    if (counter > 99) break;
+                }
+
+                // 创建新工作簿（对应VBA Workbooks.Add）
+                const newWorkbook = XLSX.utils.book_new();
+
+                // 遍历所有工作表，生成对应数据
+                for (const sheetName of sheetNames) {
+                    const worksheet = workbook.Sheets[sheetName];
+                    const aoa = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+                    if (aoa.length === 0) continue;
+
+                    // 查找「服务商名称」列索引
+                    const headerRow = aoa[0];
+                    const serviceColIndex = headerRow.findIndex(item => item === '服务商名称');
+                    if (serviceColIndex === -1) {
+                        alert(`工作表【${sheetName}】未找到【服务商名称】列，跳过该表拆分！`);
+                        continue;
+                    }
+
+                    // 筛选当前服务商的数据（对应VBA数据匹配）
+                    const filteredAoa = [headerRow]; // 先复制表头
+                    let hasMatchData = false;
+
+                    for (let i = 1; i < aoa.length; i++) {
+                        const currentStoreName = String(aoa[i][serviceColIndex] || '').trim();
+                        if (currentStoreName === storeName) {
+                            filteredAoa.push(aoa[i]);
+                            hasMatchData = true;
+                        }
+                    }
+
+                    // 无匹配数据，添加「无匹配数据」
+                    if (!hasMatchData) {
+                        filteredAoa.push(['无匹配数据']);
+                    }
+
+                    // 生成新工作表（对应VBA Worksheet.Add）
+                    const newWorksheet = XLSX.utils.aoa_to_sheet(filteredAoa);
+                    // 处理工作表名称重复（简化版）
+                    let newSheetName = sheetName;
+                    let sheetCounter = 1;
+                    while (newWorkbook.Sheets[newSheetName]) {
+                        newSheetName = `${sheetName}_${sheetCounter}`;
+                        sheetCounter++;
+                    }
+
+                    // 添加工作表到新工作簿
+                    XLSX.utils.book_append_sheet(newWorkbook, newWorksheet, newSheetName);
+                }
+
+                // 生成Excel文件的Blob数据（对应VBA SaveAs）
+                const excelData = XLSX.write(newWorkbook, { bookType: 'xlsx', type: 'array' });
+                // 添加到ZIP包（模拟文件夹）
+                zip.file(`${folderName}/${fileName}`, new Blob([excelData], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+
+                // 等待一小段时间，避免浏览器卡顿
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+
+            // 步骤4：生成ZIP压缩包并下载（对应VBA输出文件夹）
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            downloadBlob(zipBlob, `Excel拆分结果_${formatDate(new Date())}.zip`);
+
+            // 步骤5：统计耗时（对应VBA Timer - startTime）
+            const endTime = new Date().getTime();
+            const costTime = ((endTime - startTime) / 1000).toFixed(2);
+            console.log(`处理完成！共${totalStores}个服务商，耗时${costTime}秒`);
+        }
+
+        // 5. 辅助函数：清理文件名（对应VBA CleanFileName）
+        function cleanFileName(fileName) {
+            const illegalChars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
+            let cleanName = fileName;
+            illegalChars.forEach(char => {
+                cleanName = cleanName.replace(new RegExp(`\\${char}`, 'g'), '_');
+            });
+            // 截断50字符
+            return cleanName.length > 50 ? cleanName.substring(0, 50) : cleanName;
+        }
+
+        // 6. 辅助函数：格式化日期（yyyy-mm-dd）
+        function formatDate(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        // 7. 辅助函数：下载Blob文件（对应VBA文件保存）
+        function downloadBlob(blob, fileName) {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = fileName;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+    </script>
+</body>
+</html>
